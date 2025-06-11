@@ -1,6 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-
 import hashlib
 from dataclasses import dataclass, field
 
@@ -16,7 +13,7 @@ class ModelArgs:
 
     architecture: str = field(default="gpt2", metadata={
         "help": "the architecture of the model",
-        "choices": ["gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"]
+        "choices": ["gpt2", "gptneo", "openelm", "llama3", "llama3.2", "phi2", "mistral"]
     })
 
     pre_trained: bool = field(default=True, metadata={

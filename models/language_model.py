@@ -1,11 +1,10 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-
 from abc import abstractmethod
 from dataclasses import dataclass
 from typing import List, Union
 
 import dp_transformers
+from huggingface_hub import login
+
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -18,15 +17,11 @@ from ..arguments.privacy_args import PrivacyArgs
 from ..arguments.sampling_args import SamplingArgs
 from ..arguments.trainer_args import TrainerArgs
 from ..dataset.real_dataset import RealDataset
-from ..utils.callbacks import EvaluatePerplexityCallback, PrintSampleCallback
-from ..utils.output import print_highlighted
-from ..utils.web import is_valid_url, download_and_unzip
 
 
 @dataclass
 class GeneratedText:
     text: str  # the generated text
-    #score: torch.Tensor  # the score for the text
 
     def __str__(self):
         return self.text
@@ -42,6 +37,23 @@ class GeneratedTextList:
     def __str__(self):
         return "\n".join([str(x) for x in self.data])
 
+class dpDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset):
+        self.input_ids = []
+        self.attention_mask = []
+        for sample in dataset:
+            if len(sample['input_ids']) == 0:
+                print(sample)
+                continue
+            input_id = torch.tensor(sample['input_ids'])
+            self.input_ids.append(input_id)
+            self.attention_mask.append(torch.ones_like(input_id))
+
+    def __getitem__(self, index):
+        return self.input_ids[index], self.attention_mask[index]
+
+    def __len__(self):
+        return len(self.input_ids)
 
 class LanguageModel:
 
@@ -62,7 +74,10 @@ class LanguageModel:
     @property
     def n_positions(self):
         """ Gets the maximum size of the context """
-        return self._lm.config.n_positions
+        if "gpt-neo" in self.model_args.architecture:
+            return self._lm.config.max_position_embeddings
+        else:
+            return self._lm.config.n_positions
 
     @abstractmethod
     def tokenizer(self):
@@ -73,73 +88,132 @@ class LanguageModel:
     def get_config(self):
         raise NotImplementedError
 
-    def load(self, verbose: bool = False) -> 'LanguageModel':
-        """ Loads the model and tokenizer from the checkpoint.
-        """
-        model_cls, tokenizer = AutoModelForCausalLM, AutoTokenizer
 
+    def load_gpt(self, architecture: str, verbose: bool) -> 'LanguageModel':
+        # load model
         if self.model_args.model_ckpt:  # always load the checkpoint if provided.
             if verbose:
                 print(
-                    f"> Loading the provided {self.model_args.architecture} checkpoint from '{self.model_args.model_ckpt}'.")
-
-            if is_valid_url(self.model_args.model_ckpt):
-                self.model_args.model_ckpt = download_and_unzip(self.model_args.model_ckpt)
-            self._lm = model_cls.from_pretrained(self.model_args.model_ckpt, return_dict=True).eval()
-        elif self.model_args.pre_trained:  # if no checkpoint is provided, load a public, pre-trained model.
+                    f"> Loading the provided {architecture} checkpoint from "
+                    f"'{self.model_args.model_ckpt}'."
+                )
+            self._lm = AutoModelForCausalLM.from_pretrained(
+                self.model_args.model_ckpt, return_dict=True).eval()
+        else:  # if no checkpoint is provided, load a public, pre-trained model.
             if verbose:
-                print(f"> Loading a public, pre-trained {self.model_args.architecture} model.")
-            self._lm = model_cls.from_pretrained(self.model_args.architecture, return_dict=True).eval()
-        else:  # no checkpoint and no pre-trained model, hence randomly initialize model's parameters.
-            if verbose:
-                print(f"> Loading an uninitialized {self.model_args.architecture} model.")
-            self._lm = model_cls(config=self.get_config())
+                print(f"> Loading a public, pre-trained {architecture} model.")
+            self._lm = AutoModelForCausalLM.from_pretrained(
+                architecture, return_dict=True, trust_remote_code=True).eval()
 
-
-        self._tokenizer = tokenizer.from_pretrained(self.model_args.architecture,
-                                                    use_fast=self.model_args.tokenizer_use_fast)
+        # load tokenizer
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            architecture#, use_fast=self.model_args.tokenizer_use_fast
+        )
         num_added_toks = self._tokenizer.add_special_tokens({'pad_token': '[PAD]'})
         mean_tok_emb = self._lm.transformer.wte.weight.data.mean(dim=0)
         self._lm.resize_token_embeddings(len(self._tokenizer))
-
         # Initialize the newly-added token embedding to the mean of all token embeddings
         for i in range(num_added_toks):
             self._lm.transformer.wte.weight.data[-(i + 1), :] = mean_tok_emb
+        return
+
+    def load_openelm(self, verbose: bool) -> 'LanguageModel':
+        login(token='Model_Access_Token')
+        # load model
+        if self.model_args.model_ckpt:  # always load the checkpoint if provided.
+            if verbose:
+                print(
+                    "> Loading the provided apple/OpenELM-270M checkpoint "
+                    f"from '{self.model_args.model_ckpt}'."
+                )
+            self._lm = AutoModelForCausalLM.from_pretrained(
+                self.model_args.model_ckpt,
+                return_dict=True,
+                trust_remote_code=True
+            ).eval()
+        else: # if no checkpoint is provided, load a public, pre-trained model.
+            if verbose:
+                print(
+                    "> Loading a public, pre-trained apple/OpenELM-270M model."
+                )
+            self._lm = AutoModelForCausalLM.from_pretrained(
+                'apple/OpenELM-270M', return_dict=True, trust_remote_code=True
+            ).eval()
+        # load tokenizer
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            'meta-llama/Llama-2-7b-hf',
+            trust_remote_code=True,
+            model_max_length=4096
+        )
+        self._lm.config.use_cache = False
+        num_added_toks = self._tokenizer.add_special_tokens(
+            {'pad_token': '[PAD]'}
+        )
+        self._lm.resize_token_embeddings(len(self._tokenizer))
+        return
+
+
+    def load_phi2(self, verbose: bool) -> 'LanguageModel':
+        # laod model
+        if self.model_args.model_ckpt:  # always load the checkpoint if provided.
+            if verbose:
+                print(
+                    "> Loading the provided microsoft/phi-2 "
+                    f"checkpoint from '{self.model_args.model_ckpt}'."
+                )
+            self._lm = AutoModelForCausalLM.from_pretrained(
+                self.model_args.model_ckpt,
+                return_dict=True,
+                trust_remote_code=True,
+                torch_dtype="auto"
+            ).eval()
+        else:  # if no checkpoint is provided, load a public, pre-trained model.
+            if verbose:
+                print(
+                    "> Loading a public, pre-trained microsoft/phi-2"
+                    " model."
+                )
+            self._lm = AutoModelForCausalLM.from_pretrained(
+                'microsoft/phi-2',
+                return_dict=True,
+                trust_remote_code=True,
+                torch_dtype="auto"
+            ).eval()
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            'microsoft/phi-2',
+            trust_remote_code=True,
+            model_max_length=4096
+        )
+        self._lm.config.use_cache = False
+        num_added_toks = self._tokenizer.add_special_tokens(
+            {'pad_token': '[PAD]'}
+        )
+        self._lm.resize_token_embeddings(len(self._tokenizer))
+        return
+
+
+    def load(self, verbose: bool = False) -> 'LanguageModel':
+        """ Loads the model and tokenizer from the checkpoint.
+        """
+
+        if self.model_args.architecture == 'gpt2':
+            self.load_gpt('gpt2', verbose)
+        elif self.model_args.architecture == 'gptneo':
+            self.load_gpt('EleutherAI/gpt-neo-125m', verbose)
+        elif self.model_args.architecture == 'openelm':
+            self.load_openelm(verbose)
+        elif self.model_args.architecture == 'llama3':
+            self.load_llama3(verbose)
+        elif self.model_args.architecture == 'llama3.2':
+            self.load_llama3_2(verbose)
+        elif self.model_args.architecture == 'phi2':
+            self.load_phi2(verbose)
+        else:
+            raise ValueError(self.model_args.architecture)
+        self._lm.generation_config.pad_token_id = self._tokenizer.pad_token_id
 
         self._lm.to(self.env_args.device)
         return self
-
-    def substring_perplexity(self, seq: str, substring: str) -> float:
-        """ Computes the perplexity of a substring in a string.
-        For example: seq="My name is Ronald and I like hamburgers.", substring="Ronald",
-        then this function computes the perplexity of generating "Ronald" given prefix "My name is".
-        """
-        original_mode = self._lm.training
-        self._lm.eval()
-
-        txt = seq[:seq.index(substring) + len(substring)]
-        input_ids = torch.tensor(self._tokenizer.encode(txt, truncation=True)).unsqueeze(0).to(self.env_args.device)
-        substring_len = len(self._tokenizer.encode(substring, truncation=True))
-        target_ids = input_ids.clone()
-        target_ids[:, :input_ids.size(1) - substring_len] = -100
-        with torch.no_grad():
-            outputs = self._lm(input_ids, labels=target_ids)
-        loss, _, num_tokens = outputs[:3]
-
-        perplexity = torch.exp(loss / num_tokens)
-
-        self._lm.training = original_mode
-        return perplexity.cpu().item()
-
-    def autocomplete(self, sampling_args: SamplingArgs):
-        """ Predicts the top-1 most probable next tokens. """
-        return self.generate(sampling_args)[0]
-
-    def print_sample(self, prompt=None):
-        self._lm.eval()
-        data = self.generate(SamplingArgs(N=1, prompt=prompt, generate_verbose=False, seq_len=64))
-        print_highlighted(data[0].text)
-        return data[0].text
 
     @torch.no_grad()
     def generate_batch(self, input_ids, attention_mask, sampling_args) -> List[GeneratedText]:
@@ -151,19 +225,19 @@ class LanguageModel:
         out = self._lm.generate(
             input_ids=input_ids.to(self.env_args.device),
             attention_mask=attention_mask.to(self.env_args.device),
-            max_length=min(self.n_positions, input_len + sampling_args.seq_len),
+            max_length=input_len + sampling_args.seq_len,
             do_sample=sampling_args.do_sample,
+            temperature=sampling_args.temp,
             top_k=sampling_args.top_k,
             top_p=sampling_args.top_p,
             output_scores=False,
             return_dict_in_generate=True
         )
 
-        generated_texts: List[GeneratedText] = []
+        generated_texts = []
         for text in self._tokenizer.batch_decode(out.sequences, skip_special_tokens=False):
-            generated_texts.append(GeneratedText(text=text))
+            generated_texts.append(text)
         return generated_texts
-
 
     @torch.no_grad()
     def generate(self, sampling_args: SamplingArgs) -> GeneratedTextList:
@@ -189,8 +263,7 @@ class LanguageModel:
                 desc="Generating with LM"
         ):
             generated_data.extend(self.generate_batch(input_ids, attention_mask, sampling_args))
-
-        return GeneratedTextList(data=generated_data)
+        return generated_data[:sampling_args.N]
 
     def tokenize_datasets(self, datasets: List[RealDataset], column_name="text") -> List:
         """ Tokenizes the 'text' column of a list of dataset using this model's tokenizer """
@@ -224,12 +297,13 @@ class LanguageModel:
             with torch.no_grad():
                 outputs = self._lm(input_ids, labels=target_ids)
             loss, logits = outputs[:2]
+            if torch.isnan(loss):
+                continue
             if return_as_list:
                 nlls.append(loss.cpu().detach())
             else:
                 nlls.append(loss.cpu().detach())
                 ctr += tgt_len
-
         self._lm.training = original_mode
         if return_as_list:
             if apply_exp:
@@ -294,6 +368,7 @@ class LanguageModel:
                   privacy_args: PrivacyArgs):
         """ Fine-Tune the LM with/without DP
         """
+
         if privacy_args.target_epsilon > 0:
             return self._fine_tune_dp(train_dataset, eval_dataset, train_args, privacy_args)
         return self._fine_tune(train_dataset, eval_dataset, train_args)
@@ -308,19 +383,14 @@ class LanguageModel:
         if extra_callbacks is None:
             extra_callbacks = []
 
-        extra_callbacks += [PrintSampleCallback(model=self, sampling_args=SamplingArgs(),
-                                                num_steps=train_args.callback_after_n_steps)]
-        extra_callbacks += [EvaluatePerplexityCallback(dataset=eval_dataset, model=self, prefix="Eval PPL",
-                                                       num_steps=train_args.callback_after_n_steps)]
-
         data_collator = DataCollatorForLanguageModeling(tokenizer=self._tokenizer, mlm=False)
 
         print("Tokenizing Train and Eval Datasets ..")
-        eval_dataset = eval_dataset.shuffle().select(list(range(train_args.limit_eval_dataset)))
         train_dataset, eval_dataset = self.tokenize_datasets([train_dataset, eval_dataset])
         print("Done Tokenizing!")
 
         train_args.evaluation_strategy = "no"
+
         trainer = Trainer(model=self._lm,
                           args=train_args,
                           train_dataset=train_dataset,
@@ -329,5 +399,6 @@ class LanguageModel:
                           callbacks=extra_callbacks)
 
         trainer.train(resume_from_checkpoint=train_args.resume_from_checkpoint)
+
         trainer.save_model()
         self._lm.eval()

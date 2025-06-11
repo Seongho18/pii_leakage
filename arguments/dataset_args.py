@@ -1,6 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-
 import hashlib
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -12,7 +9,6 @@ class DatasetArgs:
 
     dataset_path: str = field(default="../src/extern/echr", metadata={
         "help": "The path to the dataset. ",
-        "choices": ["../src/extern/echr", "../src/extern/enron"]
     })
 
     dataset_mode: str = field(default="undefended", metadata={

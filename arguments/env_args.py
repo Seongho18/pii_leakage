@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 from dataclasses import dataclass, field
 
 
@@ -27,7 +25,7 @@ class EnvArgs:
         "help": "default batch size for training"
     })
 
-    eval_batch_size: int = field(default=32, metadata={
+    eval_batch_size: int = field(default=200, metadata={
         "help": "default batch size for inference"
     })
 

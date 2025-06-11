@@ -1,6 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-
 from dataclasses import dataclass, field
 
 from transformers import IntervalStrategy, logging, TrainingArguments
@@ -72,6 +69,19 @@ class TrainerArgs(TrainingArguments):
         metadata={
             "help": "Number of batches to accumulate."
         }
+    )
+
+    gradient_checkpointing: int = field(
+        default=True
+    )
+
+
+    fp16: bool = field(
+        default=True
+    )
+
+    is_deepspeed_zero3_enabled: bool = field(
+        default=True 
     )
 
     remove_unused_columns: bool = field(

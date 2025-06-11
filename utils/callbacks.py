@@ -1,12 +1,8 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-
 import os
 from typing import List
 
 from transformers import TrainerCallback, TrainingArguments, TrainerControl, TrainerState
 
-from ..arguments.privacy_args import PrivacyArgs
 from ..arguments.sampling_args import SamplingArgs
 from .output import print_highlighted, print_dict_highlighted
 
@@ -28,12 +24,10 @@ class PrintSampleCallback(TrainerCallback):
 class EvaluateDPEpsilonCallback(TrainerCallback):
     """ Evaluates the privacy budget of the model
     """
-    def __init__(self, model, privacy_accountant, privacy_engine, privacy_args: PrivacyArgs,
-                 num_steps: int = 500):
+    def __init__(self, model, privacy_accountant, privacy_engine, num_steps: int = 500):
         self.model = model
         self.privacy_accountant = privacy_accountant
         self.privacy_engine = privacy_engine
-        self.privacy_args = privacy_args
         self.num_steps = num_steps
 
     def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
@@ -49,7 +43,6 @@ class EvaluateDPEpsilonCallback(TrainerCallback):
             }
             
             fp = os.path.join(self.model.get_output_dir(), "training_priv.json")
-            #data[state.global_step] = eval_data
             print_dict_highlighted(eval_data)
 
 

@@ -1,6 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-
 import hashlib
 from dataclasses import dataclass, field
 
@@ -9,7 +6,7 @@ from dataclasses import dataclass, field
 class SamplingArgs:
     CONFIG_KEY = "sampling_args"
 
-    N: int = field(default=10_000, metadata={
+    N: int = field(default=200000, metadata={
         "help": "Sample N batches from the LM"
     })
 
@@ -25,7 +22,11 @@ class SamplingArgs:
         "help": "Top-p (nucleus) sampling. Top-K should be zero here."
     })
 
-    seq_len: int = field(default=512, metadata={
+    temp: float = field(default=1.0, metadata={
+        "help": "temperature value for generation."
+    })
+
+    seq_len: int = field(default=256, metadata={
         "help": "maximum length for the sample"
     })
 
