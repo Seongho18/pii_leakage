@@ -80,3 +80,19 @@ class CustomTrec(datasets.GeneratorBasedBuilder):
                 },
             )
         ]
+
+    def _generate_examples(self, split: str, start: float, end: float):
+        """ Given a start and stop location, tag all PII and generate the dataset.
+        We use multi_gpu generation for improved speed.
+        """
+        start_pos, end_pos = int(len(self.data) * start), int(len(self.data) * end)
+
+        unique_identifier = start_pos
+        for i, text in enumerate(self.data[start_pos:end_pos]):
+            pseudonymized_text = text
+
+            for _ in range(self.config.sample_duplication_rate):
+                unique_identifier += 1
+                yield f"{unique_identifier}", {
+                    self._TEXT: pseudonymized_text
+                }
